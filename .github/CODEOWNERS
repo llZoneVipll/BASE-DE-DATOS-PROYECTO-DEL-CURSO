@@ -1,0 +1,16 @@
+# Reemplazar @usuario-... por los usuarios reales de GitHub
+/scripts/01_esquema.sql                       @usuario-matias
+/scripts/07_carga_acopio_embarque.sql         @usuario-matias
+/modelos/logico/                              @usuario-matias
+/docs/convenciones.md                         @usuario-matias
+/scripts/02_seguridad.sql                     @usuario-laurente
+/scripts/03_catalogos.sql                     @usuario-laurente
+/scripts/08_pruebas.sql                       @usuario-laurente
+/scripts/ejecutar_todo.sql                    @usuario-laurente
+/docs/                                        @usuario-laurente
+/scripts/04_*                                 @usuario-pacara
+/scripts/pruebas/pruebas_campo.sql            @usuario-pacara
+/scripts/05_*                                 @usuario-bujaico
+/scripts/pruebas/pruebas_acopio.sql           @usuario-bujaico
+/scripts/06_*                                 @usuario-castro
+/modelos/procesos-bizagi/                     @usuario-castro
