@@ -244,3 +244,21 @@ JOIN productor pr ON p.id_productor = pr.id_productor
 WHERE l.estado = 'HABILITADO_PARA_COSECHA';
 
 DELIMITER ;
+
+-- =====================================================================
+-- CASOS DE PRUEBA: MÓDULO DE CAMPO Y CONTROL FITOSANITARIO (pruebas_campo)
+-- =====================================================================
+
+-- PRUEBA 1: Verificar el cálculo de la función fn_calcular_fecha_liberacion
+-- (Prueba con una aplicación efectuada hoy para un plaguicida de id = 1)
+SELECT fn_calcular_fecha_liberacion(NOW(), 1) AS fecha_liberacion_esperada;
+
+-- PRUEBA 2: Consulta de prueba para la vista de certificaciones vigentes / por vencer
+SELECT * FROM vw_certificaciones_vigentes_o_vencer;
+
+-- PRUEBA 3: Consulta de prueba para la vista de lotes habilitables
+SELECT * FROM vw_lotes_habilitables;
+
+-- PRUEBA 4: Intento de actualización de estado para validar la activación del trigger trg_valida_habilitacion_lote
+-- Nota: Si el lote id 1 no cumple con la certificación vigente, inspección aprobada o carencia, lanzará un error SQLSTATE '45000'.
+-- UPDATE lote_agricola SET estado = 'HABILITADO_PARA_COSECHA' WHERE id_lote = 1;
