@@ -7,6 +7,8 @@
 SET NAMES utf8mb4;
 USE agro_trazabilidad;
 
+SELECT fn_peso_neto(100, 5, 10);
+
 INSERT INTO tipo_asociacion (nombre)
 VALUES ('Asociacion Prueba');
 SET @tipo = LAST_INSERT_ID();
@@ -47,6 +49,8 @@ SET @destino = LAST_INSERT_ID();
 INSERT INTO tarifa
 (id_calibre, id_destino_comercial, precio_kg_pen, vigencia_desde)
 VALUES (@calibre, @destino, 4.50, '2026-01-01');
+
+SELECT fn_tarifa_kg(@calibre, @destino, '2026-11-04');
 
 CALL sp_registrar_ticket(
     'TICKET-PRUEBA', @lote,
@@ -112,3 +116,29 @@ WHERE id_productor = @productor;
 SELECT numero_contenedor, estado
 FROM contenedor_maritimo
 WHERE id_contenedor = @contenedor;
+
+/*
+Pruebas con datos incorrectos.
+Ejecutar cada consulta por separado.
+
+SELECT fn_peso_neto(100, 80, 30);
+
+SELECT fn_tarifa_kg(999999, 999999, '2026-11-04');
+
+CALL sp_registrar_ticket(
+    'TICKET-ERROR', 999999,
+    '2026-11-04', '2026-11-04 10:00:00', 'ABC-123'
+);
+
+CALL sp_registrar_control_calidad(
+    999999, NOW(), 100, 5, 10, 999999, 999999
+);
+
+CALL sp_registrar_liquidacion(999999, NOW());
+
+CALL sp_agregar_caja_pallet(999999, 999999);
+
+CALL sp_consolidar_pallet(999999, 999999);
+
+CALL sp_despachar_contenedor(999999);
+*/
