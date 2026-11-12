@@ -1,31 +1,10 @@
--- =====================================================================
--- Archivo   : 01_esquema.sql
--- Responsable: Matias
--- Proyecto  : Sistema de Trazabilidad Agroexportadora (UNMSM, BD I)
--- Estado    : PRELIMINAR - contrato de tablas para revision del equipo.
--- Motor     : MySQL 8.0.16+ / InnoDB / utf8mb4
--- Alcance   : DDL; los datos de catalogos corresponden al script 03 y
---             los procedimientos, funciones y triggers a los scripts 04/05.
--- =====================================================================
--- DECISIONES PROVISIONALES QUE EL EQUIPO DEBE CONFIRMAR:
--- 1) Cada ticket de acopio corresponde a un lote agricola.
--- 2) Cada caja proviene de un ticket; un pallet puede reunir varias cajas.
--- 3) Un pallet tiene como maximo un contenedor asignado a la vez. Si se
---    exige historial de movimientos, se ampliara el modelo.
--- 4) Al habilitar la cosecha se verificaran certificaciones vigentes,
---    inspeccion aprobada y la carencia maxima de los tratamientos.
--- 5) Las reglas entre tablas y el estado DESPACHADO requieren triggers o
---    procedimientos de los responsables de 04/05; este DDL no las valida.
--- 6) Los importes y pesos se expresan en soles y kilogramos, salvo acuerdo.
--- =====================================================================
-
 SET NAMES utf8mb4;
 CREATE DATABASE IF NOT EXISTS agro_trazabilidad
   CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 USE agro_trazabilidad;
 
 -- ---------------------------------------------------------------------
--- A. TABLAS DE REFERENCIA (el script 03 insertara sus registros)
+-- A. TABLAS DE REFERENCIA 
 -- ---------------------------------------------------------------------
 CREATE TABLE tipo_asociacion (
   id_tipo_asociacion INT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -190,6 +169,9 @@ CREATE TABLE tratamiento_fitosanitario (
   fecha_aplicacion DATETIME NOT NULL,
   periodo_carencia_dias_aplicado INT UNSIGNED NOT NULL
     COMMENT 'Copia historica de la carencia vigente al aplicar',
+  fecha_liberacion DATETIME
+    GENERATED ALWAYS AS (DATE_ADD(fecha_aplicacion, INTERVAL periodo_carencia_dias_aplicado DAY)) STORED
+    COMMENT 'Atributo derivado: fecha de aplicacion + periodo de carencia',
   observaciones VARCHAR(500) NULL,
   PRIMARY KEY (id_tratamiento),
   KEY idx_tratamiento_lote_fecha (id_lote, fecha_aplicacion),
@@ -202,6 +184,9 @@ CREATE TABLE tratamiento_fitosanitario (
 
 CREATE TABLE inspeccion_pre_cosecha (
   id_inspeccion BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  numero_acta VARCHAR(30) NOT NULL
+    DEFAULT (CONCAT('ACTA-', DATE_FORMAT(NOW(), '%Y'), '-', LPAD(MOD(UUID_SHORT(), 100000000), 8, '0')))
+    COMMENT 'Numero del Acta de Inspeccion de Pre-Cosecha (se genera solo)',
   id_lote BIGINT UNSIGNED NOT NULL,
   id_inspector BIGINT UNSIGNED NOT NULL,
   fecha_inspeccion DATETIME NOT NULL,
@@ -209,6 +194,7 @@ CREATE TABLE inspeccion_pre_cosecha (
     NOT NULL DEFAULT 'PENDIENTE',
   observaciones VARCHAR(500) NULL,
   PRIMARY KEY (id_inspeccion),
+  CONSTRAINT uq_inspeccion_numero_acta UNIQUE (numero_acta),
   KEY idx_inspeccion_lote_fecha (id_lote, fecha_inspeccion),
   KEY idx_inspeccion_inspector (id_inspector),
   CONSTRAINT fk_inspeccion_lote FOREIGN KEY (id_lote)
@@ -311,88 +297,85 @@ CREATE TABLE liquidacion (
 ) ENGINE=InnoDB;
 
 -- ---------------------------------------------------------------------
--- E. EMPAQUE, PALLETS, CONTENEDORES Y EMBARQUE
+-- E. EMPAQUE, PALLETS, CONSOLIDACION, CONTENEDORES Y EMBARQUE
+--    (Ticket N:M Pallet; Pallet N:M Contenedor mediante Consolidacion;
+--     Embarque 1:N Contenedor)
 -- ---------------------------------------------------------------------
+CREATE TABLE embarque_maritimo (
+  id_embarque BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  codigo_embarque VARCHAR(60) NOT NULL,
+  id_naviera INT UNSIGNED NOT NULL,
+  id_puerto_salida INT UNSIGNED NOT NULL,
+  id_puerto_destino INT UNSIGNED NOT NULL,
+  temperatura_min_c DECIMAL(5,2) NOT NULL,
+  temperatura_max_c DECIMAL(5,2) NOT NULL,
+  fecha_programada DATETIME NOT NULL,
+  fecha_zarpe DATETIME NULL,
+  PRIMARY KEY (id_embarque),
+  CONSTRAINT uq_embarque_codigo UNIQUE (codigo_embarque),
+  KEY idx_embarque_naviera (id_naviera),
+  KEY idx_embarque_puerto_salida (id_puerto_salida),
+  KEY idx_embarque_puerto_destino (id_puerto_destino),
+  CONSTRAINT fk_embarque_naviera FOREIGN KEY (id_naviera)
+    REFERENCES naviera (id_naviera),
+  CONSTRAINT fk_embarque_puerto_salida FOREIGN KEY (id_puerto_salida)
+    REFERENCES puerto (id_puerto),
+  CONSTRAINT fk_embarque_puerto_destino FOREIGN KEY (id_puerto_destino)
+    REFERENCES puerto (id_puerto),
+  CONSTRAINT ck_embarque_puertos CHECK (id_puerto_salida <> id_puerto_destino),
+  CONSTRAINT ck_embarque_temperatura CHECK (temperatura_min_c <= temperatura_max_c)
+) ENGINE=InnoDB;
+
 CREATE TABLE contenedor_maritimo (
   id_contenedor BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   numero_contenedor VARCHAR(20) NOT NULL,
-  id_naviera INT UNSIGNED NULL,
-  temperatura_min_c DECIMAL(5,2) NULL,
-  temperatura_max_c DECIMAL(5,2) NULL,
+  id_embarque BIGINT UNSIGNED NULL COMMENT 'Embarque en el que se despacha (0..1)',
   estado ENUM('PLANIFICADO', 'EN_CARGA', 'DESPACHADO')
     NOT NULL DEFAULT 'PLANIFICADO',
   PRIMARY KEY (id_contenedor),
   CONSTRAINT uq_contenedor_numero UNIQUE (numero_contenedor),
-  KEY idx_contenedor_naviera (id_naviera),
-  CONSTRAINT fk_contenedor_naviera FOREIGN KEY (id_naviera)
-    REFERENCES naviera (id_naviera),
-  CONSTRAINT ck_contenedor_temperatura CHECK (
-    (temperatura_min_c IS NULL AND temperatura_max_c IS NULL)
-    OR (temperatura_min_c IS NOT NULL AND temperatura_max_c IS NOT NULL
-        AND temperatura_min_c <= temperatura_max_c)
-  )
+  KEY idx_contenedor_embarque (id_embarque),
+  CONSTRAINT fk_contenedor_embarque FOREIGN KEY (id_embarque)
+    REFERENCES embarque_maritimo (id_embarque)
 ) ENGINE=InnoDB;
 
 CREATE TABLE pallet (
   id_pallet BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   codigo_pallet VARCHAR(80) NOT NULL COMMENT 'Codigo unico QR/GS1',
   fecha_armado DATETIME NOT NULL,
-  id_contenedor BIGINT UNSIGNED NULL,
+  cantidad_cajas INT UNSIGNED NOT NULL DEFAULT 0
+    COMMENT 'Suma de las cajas de ticket_pallet (la mantienen los triggers)',
   estado ENUM('ARMADO', 'ASIGNADO', 'DESPACHADO')
     NOT NULL DEFAULT 'ARMADO',
   PRIMARY KEY (id_pallet),
-  CONSTRAINT uq_pallet_codigo UNIQUE (codigo_pallet),
-  KEY idx_pallet_contenedor (id_contenedor),
-  CONSTRAINT fk_pallet_contenedor FOREIGN KEY (id_contenedor)
-    REFERENCES contenedor_maritimo (id_contenedor),
-  CONSTRAINT ck_pallet_asignacion CHECK (
-    estado NOT IN ('ASIGNADO', 'DESPACHADO') OR id_contenedor IS NOT NULL
-  )
+  CONSTRAINT uq_pallet_codigo UNIQUE (codigo_pallet)
 ) ENGINE=InnoDB;
 
-CREATE TABLE caja (
-  id_caja BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  codigo_caja VARCHAR(80) NOT NULL COMMENT 'Codigo de trazabilidad',
+CREATE TABLE ticket_pallet (
   id_ticket BIGINT UNSIGNED NOT NULL,
-  id_pallet BIGINT UNSIGNED NULL,
-  fecha_empaque DATETIME NOT NULL,
-  peso_neto_kg DECIMAL(10,3) NULL,
-  PRIMARY KEY (id_caja),
-  CONSTRAINT uq_caja_codigo UNIQUE (codigo_caja),
-  KEY idx_caja_ticket (id_ticket),
-  KEY idx_caja_pallet (id_pallet),
-  CONSTRAINT fk_caja_ticket FOREIGN KEY (id_ticket)
+  id_pallet BIGINT UNSIGNED NOT NULL,
+  cantidad_cajas INT UNSIGNED NOT NULL,
+  peso_neto_kg DECIMAL(10,3) NOT NULL,
+  PRIMARY KEY (id_ticket, id_pallet),
+  KEY idx_ticket_pallet_pallet (id_pallet),
+  CONSTRAINT fk_ticket_pallet_ticket FOREIGN KEY (id_ticket)
     REFERENCES ticket_acopio (id_ticket),
-  CONSTRAINT fk_caja_pallet FOREIGN KEY (id_pallet)
+  CONSTRAINT fk_ticket_pallet_pallet FOREIGN KEY (id_pallet)
     REFERENCES pallet (id_pallet),
-  CONSTRAINT ck_caja_peso CHECK (
-    peso_neto_kg IS NULL OR peso_neto_kg > 0
-  )
+  CONSTRAINT ck_ticket_pallet_cajas CHECK (cantidad_cajas > 0),
+  CONSTRAINT ck_ticket_pallet_peso CHECK (peso_neto_kg > 0)
 ) ENGINE=InnoDB;
 
-CREATE TABLE embarque_maritimo (
-  id_embarque BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  codigo_embarque VARCHAR(60) NOT NULL,
+CREATE TABLE consolidacion (
+  id_consolidacion BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  id_pallet BIGINT UNSIGNED NOT NULL,
   id_contenedor BIGINT UNSIGNED NOT NULL,
-  id_puerto_salida INT UNSIGNED NOT NULL,
-  id_puerto_destino INT UNSIGNED NOT NULL,
-  fecha_programada DATETIME NOT NULL,
-  fecha_despacho DATETIME NULL,
-  PRIMARY KEY (id_embarque),
-  CONSTRAINT uq_embarque_codigo UNIQUE (codigo_embarque),
-  CONSTRAINT uq_embarque_contenedor UNIQUE (id_contenedor),
-  KEY idx_embarque_puerto_salida (id_puerto_salida),
-  KEY idx_embarque_puerto_destino (id_puerto_destino),
-  CONSTRAINT fk_embarque_contenedor FOREIGN KEY (id_contenedor)
-    REFERENCES contenedor_maritimo (id_contenedor),
-  CONSTRAINT fk_embarque_puerto_salida FOREIGN KEY (id_puerto_salida)
-    REFERENCES puerto (id_puerto),
-  CONSTRAINT fk_embarque_puerto_destino FOREIGN KEY (id_puerto_destino)
-    REFERENCES puerto (id_puerto)
+  fecha_consolidacion DATETIME NOT NULL,
+  PRIMARY KEY (id_consolidacion),
+  CONSTRAINT uq_consolidacion_pallet_contenedor UNIQUE (id_pallet, id_contenedor),
+  KEY idx_consolidacion_contenedor (id_contenedor),
+  CONSTRAINT fk_consolidacion_pallet FOREIGN KEY (id_pallet)
+    REFERENCES pallet (id_pallet),
+  CONSTRAINT fk_consolidacion_contenedor FOREIGN KEY (id_contenedor)
+    REFERENCES contenedor_maritimo (id_contenedor)
 ) ENGINE=InnoDB;
-
--- ---------------------------------------------------------------------
--- FIN: el control de habilitacion, despacho y coherencia entre tablas
--- es responsabilidad de los objetos de negocio (scripts 04 y 05).
--- No desactivar FOREIGN_KEY_CHECKS durante el uso normal.
--- ---------------------------------------------------------------------

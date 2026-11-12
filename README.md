@@ -33,10 +33,41 @@ Los scripts se ejecutan sobre una instancia limpia, en este orden:
 Para correrlos todos de una vez, desde la carpeta `scripts/`:
 
 ```
+# PowerShell
+mysql -u root -p --default-character-set=utf8mb4 --local-infile=1 -e "source ejecutar_todo.sql"
+
+# CMD o Linux
 mysql -u root -p --default-character-set=utf8mb4 --local-infile=1 < ejecutar_todo.sql
 ```
 
 Las cargas corren con los triggers activos, de modo que quede comprobado que las reglas de negocio funcionan con los datos de prueba.
+
+**Resultado esperado** (sobre MySQL 8.0 limpio, sin errores):
+
+| Dato cargado | Cantidad |
+|---|---|
+| Productores / parcelas / lotes | 100 / 200 / 300 |
+| Certificaciones / tratamientos / inspecciones | 230 / 500 / 300 |
+| Tickets de acopio (con control de calidad y liquidación) | 800 (≈180 t recibidas, ≈158 t netas) |
+| Pallets / líneas ticket–pallet / cajas en pallets | 140 / 850 / 13 977 |
+| Consolidaciones / contenedores / embarques | 140 / 8 / 4 |
+
+`08_pruebas.sql` ejecuta 40 pruebas de las reglas de negocio (12 de Campo y 28 de Acopio y Embarque). Cada una termina en PASS o FAIL y al final muestra el resumen. Las pruebas usan datos con prefijo `TST-` y los borran al terminar: la base queda tal como la dejaron las cargas.
+
+Los scripts `04` a `08` empiezan con `USE agro_trazabilidad;`, así que también pueden correrse de forma individual (siempre después de `01`).
+
+## Relación con el modelo conceptual (Entrega 1)
+
+| Elemento del diagrama | Tabla |
+|---|---|
+| Productor (generalización: cooperativa / independiente / proveedor directo) | `productor` + `tipo_asociacion` |
+| Parcela · Lote agrícola (entidad débil) | `parcela` · `lote_agricola` |
+| Certificación · Tratamiento fitosanitario (fecha de liberación derivada) | `certificacion` · `tratamiento_fitosanitario` |
+| Inspección pre-cosecha (número de acta) | `inspeccion_pre_cosecha` |
+| Ticket de acopio · Control de calidad | `ticket_acopio` · `control_calidad` (+ `tarifa`, `liquidacion`) |
+| Pallet · relación "conforma" (Ticket N:M Pallet) | `pallet` · `ticket_pallet` |
+| Consolidación (entidad asociativa Pallet N:M Contenedor) | `consolidacion` |
+| Contenedor marítimo · Embarque marítimo (1:N, "se despacha en") | `contenedor_maritimo` (`id_embarque`) · `embarque_maritimo` |
 
 ## Convenciones de nomenclatura
 

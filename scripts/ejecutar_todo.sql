@@ -1,5 +1,6 @@
 -- Ejecuta todos los scripts en orden. Correr desde la carpeta scripts/:
--- mysql -u root -p --default-character-set=utf8mb4 --local-infile=1 < ejecutar_todo.sql
+-- CMD / Linux : mysql -u root -p --default-character-set=utf8mb4 --local-infile=1 < ejecutar_todo.sql
+-- PowerShell  : mysql -u root -p --default-character-set=utf8mb4 --local-infile=1 -e "source ejecutar_todo.sql"
 
 SOURCE 01_esquema.sql;
 SOURCE 02_seguridad.sql;

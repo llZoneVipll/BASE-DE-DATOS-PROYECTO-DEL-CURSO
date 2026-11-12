@@ -1,26 +1,8 @@
--- =====================================================================
--- Archivo   : 03_catalogos.sql
--- Dueño     : Laurente
--- Contenido : Registros de las tablas de referencia definidas en
---             01_esquema.sql (sección A) y datos de apoyo para las cargas.
--- Requiere  : 01_esquema.sql ejecutado (nombres de tablas y columnas tomados
---             de la versión preliminar de Matias).
--- Se ejecuta una sola vez sobre una base limpia.
---
--- Datos ficticios: los productos fitosanitarios, sus carencias, las tarifas y
--- los inspectores son valores de prueba del curso; no son referencia
--- agronómica ni de límites de residuos. Los códigos ubigeo corresponden a
--- distritos reales de zonas paltera (La Libertad, Lima e Ica).
---
--- No incluye las certificaciones: en el esquema son registros por parcela
--- (tabla certificacion) y las carga 06_carga_campo.sql.
--- =====================================================================
-
 SET NAMES utf8mb4;
 USE agro_trazabilidad;
 
 -- ---------------------------------------------------------------------
--- Tipos de asociación del productor (Sección IV-A)
+-- Tipos de asociación del productor 
 -- ---------------------------------------------------------------------
 INSERT INTO tipo_asociacion (nombre) VALUES
   ('Socio de cooperativa'),
@@ -77,7 +59,7 @@ INSERT INTO producto_fitosanitario (nombre, registro_senasa, periodo_carencia_di
   ('Glifosato',              NULL, 30);
 
 -- ---------------------------------------------------------------------
--- Navieras (Sección IV-D)
+-- Navieras 
 -- ---------------------------------------------------------------------
 INSERT INTO naviera (nombre) VALUES
   ('Maersk'),
@@ -102,7 +84,7 @@ INSERT INTO puerto (nombre, pais) VALUES
   ('Shanghái',    'CN');
 
 -- ---------------------------------------------------------------------
--- Calibres y destinos comerciales (Sección IV-C)
+-- Calibres y destinos comerciales 
 -- Calibre menor = fruta más grande y de mejor precio.
 -- ---------------------------------------------------------------------
 INSERT INTO calibre (codigo, descripcion) VALUES
