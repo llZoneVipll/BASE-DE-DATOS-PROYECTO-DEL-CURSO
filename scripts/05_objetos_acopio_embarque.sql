@@ -4,6 +4,7 @@
 -- Contenido: Funciones, triggers, procedimientos y vistas de Acopio, Calidad y Embarque (peso neto pagable, tarifa por kg, pallets, consolidación, despacho, trazabilidad reversa, liquidación).
 -- =====================================================================
 
+
 SET NAMES utf8mb4;
 USE agro_trazabilidad;
 
@@ -180,25 +181,102 @@ BEGIN
     SELECT LAST_INSERT_ID() AS id_pallet;
 END $$
 
-DROP PROCEDURE IF EXISTS sp_agregar_caja_pallet $$
-CREATE PROCEDURE sp_agregar_caja_pallet(
-    IN p_caja BIGINT UNSIGNED,
-    IN p_pallet BIGINT UNSIGNED
+-- Relacion "conforma" (Ticket N:M Pallet): un pallet reune fruta de varios tickets
+DROP PROCEDURE IF EXISTS sp_agregar_ticket_pallet $$
+CREATE PROCEDURE sp_agregar_ticket_pallet(
+    IN p_ticket BIGINT UNSIGNED,
+    IN p_pallet BIGINT UNSIGNED,
+    IN p_cantidad_cajas INT UNSIGNED,
+    IN p_peso_neto_kg DECIMAL(10,3)
 )
 BEGIN
+    DECLARE v_neto DECIMAL(12,3) DEFAULT NULL;
+    DECLARE v_asignado DECIMAL(12,3) DEFAULT 0;
+
     IF NOT EXISTS (
-        SELECT 1 FROM pallet
-        WHERE id_pallet = p_pallet AND estado = 'ARMADO'
+        SELECT 1 FROM pallet WHERE id_pallet = p_pallet AND estado = 'ARMADO'
     ) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Pallet no disponible';
     END IF;
 
-    UPDATE caja
-    SET id_pallet = p_pallet
-    WHERE id_caja = p_caja AND id_pallet IS NULL;
+    SELECT cc.peso_neto_pagable_kg INTO v_neto
+    FROM ticket_acopio t
+    JOIN control_calidad cc ON cc.id_ticket = t.id_ticket
+    JOIN destino_comercial d ON d.id_destino_comercial = cc.id_destino_comercial
+    WHERE t.id_ticket = p_ticket AND d.nombre = 'EXPORTACION';
 
-    IF ROW_COUNT() = 0 THEN
-        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Caja inexistente o asignada';
+    IF v_neto IS NULL THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'El ticket no es de exportacion o no tiene control de calidad';
+    END IF;
+
+    SELECT COALESCE(SUM(peso_neto_kg), 0) INTO v_asignado
+    FROM ticket_pallet WHERE id_ticket = p_ticket;
+
+    IF v_asignado + p_peso_neto_kg > v_neto THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'El peso supera el neto pagable del ticket';
+    END IF;
+
+    INSERT INTO ticket_pallet (id_ticket, id_pallet, cantidad_cajas, peso_neto_kg)
+    VALUES (p_ticket, p_pallet, p_cantidad_cajas, p_peso_neto_kg);
+END $$
+
+-- La cantidad de cajas del pallet es un atributo derivado: la mantienen estos triggers
+DROP TRIGGER IF EXISTS trg_ticket_pallet_ai_cajas $$
+CREATE TRIGGER trg_ticket_pallet_ai_cajas
+AFTER INSERT ON ticket_pallet
+FOR EACH ROW
+BEGIN
+    UPDATE pallet SET cantidad_cajas = cantidad_cajas + NEW.cantidad_cajas
+    WHERE id_pallet = NEW.id_pallet;
+END $$
+
+DROP TRIGGER IF EXISTS trg_ticket_pallet_au_cajas $$
+CREATE TRIGGER trg_ticket_pallet_au_cajas
+AFTER UPDATE ON ticket_pallet
+FOR EACH ROW
+BEGIN
+    UPDATE pallet SET cantidad_cajas = cantidad_cajas - OLD.cantidad_cajas
+    WHERE id_pallet = OLD.id_pallet;
+
+    UPDATE pallet SET cantidad_cajas = cantidad_cajas + NEW.cantidad_cajas
+    WHERE id_pallet = NEW.id_pallet;
+END $$
+
+DROP TRIGGER IF EXISTS trg_ticket_pallet_ad_cajas $$
+CREATE TRIGGER trg_ticket_pallet_ad_cajas
+AFTER DELETE ON ticket_pallet
+FOR EACH ROW
+BEGIN
+    UPDATE pallet SET cantidad_cajas = cantidad_cajas - OLD.cantidad_cajas
+    WHERE id_pallet = OLD.id_pallet;
+END $$
+
+-- Entidad asociativa Consolidacion (Pallet N:M Contenedor): reglas al consolidar
+DROP TRIGGER IF EXISTS trg_consolidacion_bi_valida $$
+CREATE TRIGGER trg_consolidacion_bi_valida
+BEFORE INSERT ON consolidacion
+FOR EACH ROW
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pallet WHERE id_pallet = NEW.id_pallet AND estado = 'ARMADO'
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Pallet no disponible';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM ticket_pallet WHERE id_pallet = NEW.id_pallet
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Pallet sin tickets';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM contenedor_maritimo
+        WHERE id_contenedor = NEW.id_contenedor
+          AND estado IN ('PLANIFICADO', 'EN_CARGA')
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Contenedor no disponible';
     END IF;
 END $$
 
@@ -216,34 +294,35 @@ BEGIN
 
     START TRANSACTION;
 
-    IF NOT EXISTS (
-        SELECT 1 FROM contenedor_maritimo
-        WHERE id_contenedor = p_contenedor
-          AND estado IN ('PLANIFICADO', 'EN_CARGA')
-    ) THEN
-        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Contenedor no disponible';
-    END IF;
+    INSERT INTO consolidacion (id_pallet, id_contenedor, fecha_consolidacion)
+    VALUES (p_pallet, p_contenedor, NOW());
 
-    IF NOT EXISTS (
-        SELECT 1 FROM caja WHERE id_pallet = p_pallet
-    ) THEN
-        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Pallet sin cajas';
-    END IF;
+    UPDATE pallet SET estado = 'ASIGNADO' WHERE id_pallet = p_pallet;
 
-    UPDATE pallet
-    SET id_contenedor = p_contenedor, estado = 'ASIGNADO'
-    WHERE id_pallet = p_pallet
-      AND id_contenedor IS NULL AND estado = 'ARMADO';
-
-    IF ROW_COUNT() = 0 THEN
-        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Pallet no disponible';
-    END IF;
-
-    UPDATE contenedor_maritimo
-    SET estado = 'EN_CARGA'
+    UPDATE contenedor_maritimo SET estado = 'EN_CARGA'
     WHERE id_contenedor = p_contenedor;
 
     COMMIT;
+END $$
+
+-- Un contenedor se despacha en un embarque (0..1); un embarque agrupa 1..N contenedores
+DROP PROCEDURE IF EXISTS sp_asignar_contenedor_embarque $$
+CREATE PROCEDURE sp_asignar_contenedor_embarque(
+    IN p_contenedor BIGINT UNSIGNED,
+    IN p_embarque BIGINT UNSIGNED
+)
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM embarque_maritimo WHERE id_embarque = p_embarque) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Embarque inexistente';
+    END IF;
+
+    UPDATE contenedor_maritimo
+    SET id_embarque = p_embarque
+    WHERE id_contenedor = p_contenedor AND estado <> 'DESPACHADO';
+
+    IF ROW_COUNT() = 0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Contenedor no disponible';
+    END IF;
 END $$
 
 DROP TRIGGER IF EXISTS trg_contenedor_maritimo_bu_despacho $$
@@ -252,25 +331,31 @@ BEFORE UPDATE ON contenedor_maritimo
 FOR EACH ROW
 BEGIN
     IF NEW.estado = 'DESPACHADO' AND OLD.estado <> 'DESPACHADO' THEN
-        IF NEW.numero_contenedor IS NULL OR TRIM(NEW.numero_contenedor) = ''
-           OR NEW.id_naviera IS NULL
-           OR NEW.temperatura_min_c IS NULL
-           OR NEW.temperatura_max_c IS NULL THEN
+        IF NEW.numero_contenedor IS NULL OR TRIM(NEW.numero_contenedor) = '' THEN
             SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Faltan datos del contenedor';
         END IF;
 
+        IF NEW.id_embarque IS NULL THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'Faltan datos del embarque: el contenedor no tiene embarque asignado';
+        END IF;
+
+        -- naviera, puertos y rango de temperatura son obligatorios en el embarque;
+        -- aqui se exige ademas que ya tenga fecha de zarpe
         IF NOT EXISTS (
             SELECT 1 FROM embarque_maritimo
-            WHERE id_contenedor = NEW.id_contenedor
+            WHERE id_embarque = NEW.id_embarque
               AND id_puerto_salida <> id_puerto_destino
-              AND fecha_despacho IS NOT NULL
+              AND fecha_zarpe IS NOT NULL
         ) THEN
             SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Faltan datos del embarque';
         END IF;
 
         IF NOT EXISTS (
-            SELECT 1 FROM pallet
-            WHERE id_contenedor = NEW.id_contenedor AND estado = 'ASIGNADO'
+            SELECT 1
+            FROM consolidacion cs
+            JOIN pallet p ON p.id_pallet = cs.id_pallet
+            WHERE cs.id_contenedor = NEW.id_contenedor AND p.estado = 'ASIGNADO'
         ) THEN
             SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Contenedor sin pallets';
         END IF;
@@ -288,9 +373,10 @@ BEGIN
 
     START TRANSACTION;
 
-    UPDATE embarque_maritimo
-    SET fecha_despacho = NOW()
-    WHERE id_contenedor = p_contenedor AND fecha_despacho IS NULL;
+    UPDATE embarque_maritimo e
+    JOIN contenedor_maritimo c ON c.id_embarque = e.id_embarque
+    SET e.fecha_zarpe = NOW()
+    WHERE c.id_contenedor = p_contenedor AND e.fecha_zarpe IS NULL;
 
     UPDATE contenedor_maritimo
     SET estado = 'DESPACHADO'
@@ -300,27 +386,109 @@ BEGIN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Contenedor no disponible para despacho';
     END IF;
 
-    UPDATE pallet
-    SET estado = 'DESPACHADO'
-    WHERE id_contenedor = p_contenedor AND estado = 'ASIGNADO';
+    UPDATE pallet p
+    JOIN consolidacion cs ON cs.id_pallet = p.id_pallet
+    SET p.estado = 'DESPACHADO'
+    WHERE cs.id_contenedor = p_contenedor AND p.estado = 'ASIGNADO';
 
     COMMIT;
+END $$
+
+-- Control de ingreso a planta: ademas de estar habilitado, en la fecha de cosecha el lote
+-- debe tener certificacion vigente y no estar en periodo de carencia
+DROP TRIGGER IF EXISTS trg_ticket_acopio_bi_valida $$
+CREATE TRIGGER trg_ticket_acopio_bi_valida
+BEFORE INSERT ON ticket_acopio
+FOR EACH ROW
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM lote_agricola
+        WHERE id_lote = NEW.id_lote AND estado = 'HABILITADO_PARA_COSECHA'
+    ) THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Lote no habilitado';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM lote_agricola l
+        JOIN certificacion c ON c.id_parcela = l.id_parcela
+        WHERE l.id_lote = NEW.id_lote
+          AND NEW.fecha_cosecha BETWEEN c.fecha_inicio AND c.fecha_fin
+    ) THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'La parcela no tiene certificacion vigente en la fecha de cosecha';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM tratamiento_fitosanitario t
+        WHERE t.id_lote = NEW.id_lote
+          AND DATE(t.fecha_aplicacion) <= NEW.fecha_cosecha
+          AND DATE(t.fecha_liberacion) > NEW.fecha_cosecha
+    ) THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'El lote esta en periodo de carencia en la fecha de cosecha';
+    END IF;
+END $$
+
+-- Informacion de pago: no se liquida ni se paga a un productor sin entidad financiera y cuenta
+DROP TRIGGER IF EXISTS trg_liquidacion_bi_pago $$
+CREATE TRIGGER trg_liquidacion_bi_pago
+BEFORE INSERT ON liquidacion
+FOR EACH ROW
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM ticket_acopio t
+        JOIN lote_agricola l ON l.id_lote = t.id_lote
+        JOIN parcela pa ON pa.id_parcela = l.id_parcela
+        JOIN productor pr ON pr.id_productor = pa.id_productor
+        WHERE t.id_ticket = NEW.id_ticket
+          AND pr.id_entidad_financiera IS NOT NULL
+          AND pr.numero_cuenta IS NOT NULL AND TRIM(pr.numero_cuenta) <> ''
+    ) THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Productor sin datos de pago: falta entidad financiera o numero de cuenta';
+    END IF;
+END $$
+
+DROP TRIGGER IF EXISTS trg_liquidacion_bu_pago $$
+CREATE TRIGGER trg_liquidacion_bu_pago
+BEFORE UPDATE ON liquidacion
+FOR EACH ROW
+BEGIN
+    IF NEW.estado = 'PAGADA' AND OLD.estado <> 'PAGADA' THEN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM ticket_acopio t
+            JOIN lote_agricola l ON l.id_lote = t.id_lote
+            JOIN parcela pa ON pa.id_parcela = l.id_parcela
+            JOIN productor pr ON pr.id_productor = pa.id_productor
+            WHERE t.id_ticket = NEW.id_ticket
+              AND pr.id_entidad_financiera IS NOT NULL
+              AND pr.numero_cuenta IS NOT NULL AND TRIM(pr.numero_cuenta) <> ''
+        ) THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'Productor sin datos de pago: falta entidad financiera o numero de cuenta';
+        END IF;
+    END IF;
 END $$
 
 DELIMITER ;
 
 CREATE OR REPLACE VIEW vw_trazabilidad_reversa AS
-SELECT p.codigo_pallet, c.codigo_caja, t.codigo_ticket,
+SELECT p.codigo_pallet, tp.cantidad_cajas, t.codigo_ticket,
        l.codigo_lote, pa.codigo_catastral,
        pr.numero_documento, pr.nombre_completo,
-       co.numero_contenedor
+       co.numero_contenedor, em.codigo_embarque
 FROM pallet p
-JOIN caja c ON c.id_pallet = p.id_pallet
-JOIN ticket_acopio t ON t.id_ticket = c.id_ticket
+JOIN ticket_pallet tp ON tp.id_pallet = p.id_pallet
+JOIN ticket_acopio t ON t.id_ticket = tp.id_ticket
 JOIN lote_agricola l ON l.id_lote = t.id_lote
 JOIN parcela pa ON pa.id_parcela = l.id_parcela
 JOIN productor pr ON pr.id_productor = pa.id_productor
-LEFT JOIN contenedor_maritimo co ON co.id_contenedor = p.id_contenedor;
+LEFT JOIN consolidacion cs ON cs.id_pallet = p.id_pallet
+LEFT JOIN contenedor_maritimo co ON co.id_contenedor = cs.id_contenedor
+LEFT JOIN embarque_maritimo em ON em.id_embarque = co.id_embarque;
 
 CREATE OR REPLACE VIEW vw_liquidacion_productor AS
 SELECT pr.id_productor, pr.nombre_completo,
